@@ -1,9 +1,9 @@
-
+package definitions;
 
 /**
 * @brief Global pcap header.
 */
-typedef struct pcap_hdr_s {
+typedef struct{
   logic [31:0] magic_number;   /**< magic number */
   logic [15:0] version_major;  /**< major version number */
   logic [15:0] version_minor;  /**< minor version number */
@@ -16,21 +16,11 @@ typedef struct pcap_hdr_s {
 /**
 * @brief Pcap packet header.
 */
-typedef struct pcaprec_hdr_s {
+typedef struct{
   logic [31:0] ts_sec;         /**< timestamp seconds */
   logic [31:0] ts_usec;        /**< timestamp microseconds */
   logic [31:0] incl_len;       /**< number of octets of packet saved in file */
   logic [31:0] orig_len;       /**< actual length of packet */
-} pcaprec_hdr_t;
-
-
-/**
-* @brief Pcap packet header.
-*/
-typedef struct axi_stream_64b {
-  logic tvalid;
-  logic tready;
-  logic [63:0] tdata;
 } pcaprec_hdr_t;
 
 
@@ -41,5 +31,9 @@ typedef struct axi_stream_64b {
  typedef struct { \
         logic tvalid; \
         logic tready; \
-        logic [DATA_WIDTH-1:0] tdata;   \
-    } `AXI4_STREAM_STRUCT(NAME)
+        logic [DATA_WIDTH/8-1:0] tstrb;   \
+        logic [DATA_WIDTH-1:0]   tdata;   \
+    } `AXI4_STREAM_STRUCT(NAME);
+
+
+endpackage
