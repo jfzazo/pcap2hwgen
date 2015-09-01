@@ -1,9 +1,13 @@
 `timescale 1ns/1ps
 
 `include "types.sv"
+
 import definitions::*;
 
 `AXI4_STREAM_STRUCT_DEF(128b, 128)
+
+
+
 
 module pcap_gheader_parser ( 
   input   wire                     CLK,
@@ -17,7 +21,9 @@ module pcap_gheader_parser (
 );
 
   logic [1:0] gheader_parser_state;
-  logic is_gheader_valid = (gheader_parser_state == 2'h2) 
+  logic is_gheader_valid;
+  
+  assign is_gheader_valid = (gheader_parser_state == 2'h2) 
                         || (AXIS_PCAP_S.tvalid && (gheader_parser_state == 2'h1));
   
   always @(posedge CLK or negedge RST_N) begin
@@ -29,7 +35,7 @@ module pcap_gheader_parser (
         2'h0: begin
           if( AXIS_PCAP_S.tvalid ) begin
             gheader_parser_state        <= 2'h1;
-            GLOBAL_HEADER.magic_numer   <= AXIS_PCAP_S.tdata[31:0]; 
+            GLOBAL_HEADER.magic_number   <= AXIS_PCAP_S.tdata[31:0]; 
             GLOBAL_HEADER.version_major <= AXIS_PCAP_S.tdata[47:32]; 
             GLOBAL_HEADER.version_minor <= AXIS_PCAP_S.tdata[63:48];
             GLOBAL_HEADER.thiszone      <= AXIS_PCAP_S.tdata[95:64]; 
@@ -81,8 +87,9 @@ module pcap_lheader_parser (
 );
 
   logic [1:0] lheader_parser_state;
-  logic is_lheader_valid = lheader_parser_state == 2'b2
-                         || (AXIS_PCAP_S.tvalid & ( lheader_parser_state  == 2'h1));
+  logic is_lheader_valid;
+  
+  assign is_lheader_valid = lheader_parser_state == 2'h2 || (AXIS_PCAP_S.tvalid && ( lheader_parser_state  == 2'h1));
   
   always @(posedge CLK or negedge RST_N) begin
     if(!RST_N) begin
@@ -96,11 +103,11 @@ module pcap_lheader_parser (
             LOCAL_HEADER.ts_sec   <= AXIS_PCAP_S.tdata[31:0]; 
             LOCAL_HEADER.ts_usec  <= AXIS_PCAP_S.tdata[63:32]; 
             LOCAL_HEADER.incl_len <= AXIS_PCAP_S.tdata[95:64]; 
-            LOCAL_HEADER.orig_len <= AXIS_PCAP_S.tdata[128:96];
+            LOCAL_HEADER.orig_len <= AXIS_PCAP_S.tdata[127:96];
           end else if(AXIS_PCAP_S.tvalid) begin 
             lheader_parser_state  <= 2'h1;
             LOCAL_HEADER.ts_sec   <= AXIS_PCAP_S.tdata[95:64]; 
-            LOCAL_HEADER.ts_usec  <= AXIS_PCAP_S.tdata[128:96]; 
+            LOCAL_HEADER.ts_usec  <= AXIS_PCAP_S.tdata[127:96]; 
           end else begin 
             lheader_parser_state <= lheader_parser_state;
           end
@@ -147,6 +154,7 @@ module compute_fcs (
   output  logic [31:0]             FCS
 
 );
+  `include "crc32.v"
 
   assign AXIS_RAW_S.tready = 1'b1;
   // Synchronous?
@@ -156,6 +164,158 @@ module compute_fcs (
                   crc32_d128(AXIS_RAW_S.tdata[127:63], PREV_FCS)
                   : 32'h0;
 endmodule
+
+
+
+module header2generic ( 
+  input   wire                     CLK,
+  input   wire                     RST_N,
+
+
+  input   pcap_hdr_t               GLOBAL_HEADER,
+  input   wire                     GLOBAL_HEADER_VALID,
+
+  input   pcaprec_hdr_t            LOCAL_HEADER,
+  input   wire                     LOCAL_HEADER_VALID,
+
+  output  genericrec_hdr_t         GENERIC_HEADER,
+  output  wire                     INVALID_FORMAT 
+);
+
+  wire ns_resolution, us_resolution;
+  wire is_valid_format;
+
+  assign us_resolution = GLOBAL_HEADER_VALID & (GLOBAL_HEADER.magic_number == PCAP_US_RESOLUTION_C);
+  assign ns_resolution = GLOBAL_HEADER_VALID & (GLOBAL_HEADER.magic_number == PCAP_NS_RESOLUTION_C);
+  assign is_valid_format = us_resolution | ns_resolution;
+
+
+  assign INVALID_FORMAT = !is_valid_format & LOCAL_HEADER_VALID & GLOBAL_HEADER_VALID;
+
+  assign GENERIC_HEADER.incl_len = LOCAL_HEADER_VALID ? LOCAL_HEADER.incl_len : 32'h0;
+  assign GENERIC_HEADER.orig_len = LOCAL_HEADER_VALID ? LOCAL_HEADER.incl_len : 32'h0;  // We do NOT expand packets. TODO?
+  assign GENERIC_HEADER.valid    = GLOBAL_HEADER_VALID & LOCAL_HEADER_VALID & is_valid_format;      // Support classic PCAP with ns or us resolution
+  assign GENERIC_HEADER.ts =  ns_resolution ? 
+                              LOCAL_HEADER.ts_sec*1e9 + LOCAL_HEADER.ts_usec 
+                              : LOCAL_HEADER.ts_sec*1e9 + LOCAL_HEADER.ts_usec*1e3; 
+endmodule
+
+module hwgen_header_creator ( 
+  input   wire                      CLK,
+  input   wire                      RST_N,
+
+  input   genericrec_hdr_t          GENERIC_HEADER,
+  input   wire                      EOF,
+
+  output  hwgen_hdr_t               HWGEN_HEADER,
+  output  logic                     HWGEN_HEADER_VALID
+);
+
+  logic [63:0]   prev_ts;
+  logic [31:0]   prev_sz;
+
+  always @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      prev_ts <= 64'h0;
+      prev_sz <= 32'h0;
+    end else begin
+      if(EOF) begin
+        HWGEN_HEADER.orig_len <= prev_ts;
+        HWGEN_HEADER.ifg      <= (GENERIC_HEADER.ts-prev_ts)*NS_PER_CYCLE_INV;
+        HWGEN_HEADER_VALID    <= 1'b1;
+        prev_ts <= GENERIC_HEADER.ts;
+        prev_sz <= GENERIC_HEADER.orig_len;
+      end else begin
+        HWGEN_HEADER_VALID    <= 1'b0;
+      end
+    end
+  end
+
+
+  assign HWGEN_HEADER.magic_number = HWGEN_MAGIC_NUMBER_C;
+endmodule
+
+module packet_parser ( 
+  input   wire                      CLK,
+  input   wire                      RST_N,
+
+  input   `AXI4_STREAM_STRUCT(128b) AXIS_RAW_S,
+  output  `AXI4_STREAM_STRUCT(128b) AXIS_RAW_CRC_M,
+
+  input   genericrec_hdr_t          GENERIC_HEADER,
+  output  wire                      EOF
+);
+
+
+
+  logic [31:0] prev_fcs;
+  logic [31:0] n_fcs;
+  logic [31:0] noctects;
+  logic update_crc;
+  `AXI4_STREAM_STRUCT(128b) axis_crc;
+  `AXI4_STREAM_STRUCT(128b) axis_fifo;
+
+  always @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      noctects   <= 32'h0;
+      prev_fcs <= 32'h0;
+    end else begin
+      if( GENERIC_HEADER.valid & !EOF ) begin
+        if(AXIS_RAW_S.tvalid & AXIS_RAW_S.tready) begin
+          prev_fcs <= n_fcs;
+        end else begin
+          prev_fcs <= prev_fcs;
+        end
+      end else begin
+        noctects   <= 32'h0;
+        prev_fcs   <= 32'h0;
+      end
+    end
+  end
+
+  assign axis_crc.tlast  = 1'b1;
+  assign axis_crc.tvalid = 1'b1;
+  assign axis_crc.tdata  = prev_fcs;
+  assign axis_crc.tstrb  = 16'h000F;
+
+  assign axis_fifo.tlast  = !EOF ? AXIS_RAW_S.tlast : axis_crc.tlast; 
+  assign axis_fifo.tvalid = !EOF ? AXIS_RAW_S.tvalid : axis_crc.tvalid;
+  assign axis_fifo.tdata  = !EOF ? AXIS_RAW_S.tdata : axis_crc.tdata; 
+  assign axis_fifo.tstrb  = !EOF ? AXIS_RAW_S.tstrb : axis_crc.tstrb; 
+  assign axis_fifo.tlast  = !EOF ? AXIS_RAW_S.tlast : axis_crc.tlast; 
+
+
+  assign AXIS_RAW_S.tready  = !EOF ? axis_fifo.tstrb : 1'b0; 
+  assign axis_crc.tready  = !EOF ? 1'b0 : axis_fifo.tstrb; 
+
+
+
+
+  assign EOF = GENERIC_HEADER.valid && (noctects >= GENERIC_HEADER.orig_len);
+
+  compute_fcs compute_fcs_i (
+    .CLK(CLK),
+    .RST_N(RST_N),
+    .AXIS_RAW_S(AXIS_RAW_S),
+    .PREV_FCS(prev_fcs),
+    .FCS(n_fcs)
+  );
+
+  fcs_fifo fcs_fifo_i (
+    .s_aclk(CLK),                // input wire s_aclk
+    .s_aresetn(RST_N),          // input wire s_aresetn
+    .s_axis_tvalid(axis_fifo.tvalid),  // input wire s_axis_tvalid
+    .s_axis_tready(axis_fifo.tready),  // output wire s_axis_tready
+    .s_axis_tdata(axis_fifo.tdata),    // input wire [127 : 0] s_axis_tdata
+    .s_axis_tlast(axis_fifo.tlast),    // input wire s_axis_tlast
+    .m_axis_tvalid(AXIS_RAW_CRC_M.tvalid),  // output wire m_axis_tvalid
+    .m_axis_tready(AXIS_RAW_CRC_M.tready),  // input wire m_axis_tready
+    .m_axis_tdata(AXIS_RAW_CRC_M.tdata),    // output wire [127 : 0] m_axis_tdata
+    .m_axis_tlast(AXIS_RAW_CRC_M.tlast)    // output wire m_axis_tlast
+  );
+
+endmodule
+
 
 module pcap2hwgen ( 
   input  wire           CLK,
@@ -180,7 +340,21 @@ module pcap2hwgen (
   pcaprec_hdr_t local_header;
   wire          local_header_valid;
 
-  assign HWGEN_TDATA = '{default:0};
+  genericrec_hdr_t gen_local_header;
+  wire          eof;
+
+
+
+
+  assign AXIS_PCAP.tlast  = 1'b0;
+  assign AXIS_PCAP.tvalid = PCAP_TVALID;
+  assign AXIS_PCAP.tdata  = PCAP_TDATA;
+  assign AXIS_PCAP.tstrb  = 16'hFFFF;
+  assign PCAP_TREADY      = AXIS_PCAP.tready;
+
+
+  assign HWGEN_TDATA  = 128'h0;
+  assign HWGEN_TVALID = 1'h0;
 
   pcap_gheader_parser pcap_gheader_parser_i (
     .CLK(CLK),
@@ -193,43 +367,37 @@ module pcap2hwgen (
 
   pcap_lheader_parser pcap_lheader_parser_i (
     .CLK(CLK),
-    .RST_N(RST_N),
+    .RST_N(RST_N || !eof),
     .AXIS_PCAP_S(AXIS_PCAP_LVL2),
     .AXIS_RAW_M(AXIS_RAW),
     .LOCAL_HEADER(local_header),
     .LOCAL_HEADER_VALID(local_header_valid)
   );
 
-
-  compute_fcs compute_fcs_i (
+  header2generic header2generic_i ( // Parse global and local headers in order to get a common structure.
     .CLK(CLK),
     .RST_N(RST_N),
-    .AXIS_RAW_S(AXIS_RAW),
-    .PREV_FCS(prev_fcs),
-    .FCS(n_fcs)
+    .GLOBAL_HEADER(global_header),
+    .GLOBAL_HEADER_VALID(global_header_valid),    
+    .LOCAL_HEADER(local_header),
+    .LOCAL_HEADER_VALID(local_header_valid),
+    .GENERIC_HEADER(gen_local_header)
   );
 
+  packet_parser packet_parser_i (
+    .CLK(CLK),
+    .RST_N(RST_N),    
+    .AXIS_RAW_S(AXIS_RAW),
+    .GENERIC_HEADER(gen_local_header),
+    .EOF(eof)
+  );
 
+  hwgen_header_creator hwgen_header_creator_i (
+    .CLK(CLK),
+    .RST_N(RST_N),    
+    .GENERIC_HEADER(gen_local_header),
+    .EOF(eof)
+  );
 
-//    if (global_header[0] == 8'hD4 && global_header[1] == 8'hC3 && global_header[2] == 8'hB2) begin
-//      $display(" pcap endian: swapped, ms");
-//      swapped = 1;
-//      toNanos = 32'd1000000;
-//    end else if (global_header[0] == 8'hA1 && global_header[1] == 8'hB2 && global_header[2] == 8'hC3) begin
-//      $display(" pcap endian: native, ms");
-//      swapped = 0;
-//      toNanos = 32'd1000000;
-//    end else if (global_header[0] == 8'h4D && global_header[1] == 8'h3C && global_header[2] == 8'hb2) begin
-//      $display(" pcap endian: swapped, nanos");
-//      swapped = 1;
-//      toNanos = 32'd1;
-//    end else if (global_header[0] == 8'hA1 && global_header[1] == 8'hB2 && global_header[2] == 8'h3c) begin
-//      $display(" pcap endian: native, nanos");
-//      swapped = 0;
-//      toNanos = 32'd1;
-//    end else begin
-//      $display(" pcap endian: unrecognised format %02x%02x%02x%02x", global_header[0], global_header[1], global_header[2], global_header[3] );
-//      $finish_and_return(1);
-//    end
 
 endmodule

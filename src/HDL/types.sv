@@ -1,5 +1,15 @@
 package definitions;
 
+
+parameter  PCAP_US_RESOLUTION_C = 32'hA1B2C3D4;
+parameter  PCAP_NS_RESOLUTION_C = 32'hA1B23C4D;
+parameter  HWGEN_MAGIC_NUMBER_C = 16'h6969;
+parameter  CLOCK_FREQ_HZ        = 156250000;
+parameter  NS_PER_CYCLE         = (1.0/CLOCK_FREQ_HZ*1e9);
+parameter  NS_PER_CYCLE_INV     = (1.0/(1.0/CLOCK_FREQ_HZ*1e9));
+
+
+
 /**
 * @brief Global pcap header.
 */
@@ -24,6 +34,22 @@ typedef struct{
 } pcaprec_hdr_t;
 
 
+typedef struct{
+  logic [63:0] ts;         /**< timestamp nanoseconds */
+  logic [31:0] incl_len;       /**< number of octets of packet saved in file */
+  logic [31:0] orig_len;       /**< actual length of packet */
+  logic        valid;          /**< The previous content is valid */
+} genericrec_hdr_t;
+
+
+
+typedef struct{
+  logic [16:0] magic_number;
+  logic [16:0] orig_len;
+  logic [31:0] ifg;     
+} hwgen_hdr_t;
+
+
 `define AXI4_STREAM_STRUCT(NAME) \
    axi_stream_``NAME``
 
@@ -31,6 +57,7 @@ typedef struct{
  typedef struct { \
         logic tvalid; \
         logic tready; \
+        logic tlast; \
         logic [DATA_WIDTH/8-1:0] tstrb;   \
         logic [DATA_WIDTH-1:0]   tdata;   \
     } `AXI4_STREAM_STRUCT(NAME);
