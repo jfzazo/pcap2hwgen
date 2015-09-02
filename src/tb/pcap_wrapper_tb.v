@@ -69,7 +69,7 @@ initial begin
 
 
     while(!$feof(file)) begin
-        #10
+        #5
         pcap_tvalid = 1;
 
         pcap_tdata[0*8+:8] <= $fgetc(file);    
@@ -88,7 +88,8 @@ initial begin
         pcap_tdata[13*8+:8] <= $fgetc(file);
         pcap_tdata[14*8+:8] <= $fgetc(file);
         pcap_tdata[15*8+:8] <= $fgetc(file);
-      
+        #5
+        pcap_tvalid = 1;
 //        @(posedge pcap_tready)
     end   
    

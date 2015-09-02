@@ -56,11 +56,20 @@ typedef struct{
 `define AXI4_STREAM_STRUCT_DEF(NAME, DATA_WIDTH) \
  typedef struct { \
         logic tvalid; \
-        logic tready; \
         logic tlast; \
         logic [DATA_WIDTH/8-1:0] tstrb;   \
         logic [DATA_WIDTH-1:0]   tdata;   \
     } `AXI4_STREAM_STRUCT(NAME);
+
+
+
+`define AXI4_STREAM_READY_STRUCT(NAME) \
+   axi_stream_ready_``NAME``
+
+`define AXI4_STREAM_READY_STRUCT_DEF(NAME, DATA_WIDTH) \
+ typedef struct { \
+        logic tready; \
+    } `AXI4_STREAM_READY_STRUCT(NAME);
 
 
 endpackage
