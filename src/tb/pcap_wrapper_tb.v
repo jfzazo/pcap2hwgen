@@ -69,26 +69,27 @@ initial begin
 
 
     while(!$feof(file)) begin
-        #5
+        #1
         pcap_tvalid = 1;
-
-        pcap_tdata[0*8+:8] <= $fgetc(file);    
-        pcap_tdata[1*8+:8] <= $fgetc(file);
-        pcap_tdata[2*8+:8] <= $fgetc(file);
-        pcap_tdata[3*8+:8] <= $fgetc(file);
-        pcap_tdata[4*8+:8] <= $fgetc(file);
-        pcap_tdata[5*8+:8] <= $fgetc(file);
-        pcap_tdata[6*8+:8] <= $fgetc(file);
-        pcap_tdata[7*8+:8] <= $fgetc(file);
-        pcap_tdata[8*8+:8] <= $fgetc(file);
-        pcap_tdata[9*8+:8] <= $fgetc(file);
-        pcap_tdata[10*8+:8] <= $fgetc(file);
-        pcap_tdata[11*8+:8] <= $fgetc(file);
-        pcap_tdata[12*8+:8] <= $fgetc(file);
-        pcap_tdata[13*8+:8] <= $fgetc(file);
-        pcap_tdata[14*8+:8] <= $fgetc(file);
-        pcap_tdata[15*8+:8] <= $fgetc(file);
-        #5
+        if(pcap_tready) begin
+          pcap_tdata[0*8+:8] <= $fgetc(file);    
+          pcap_tdata[1*8+:8] <= $fgetc(file);
+          pcap_tdata[2*8+:8] <= $fgetc(file);
+          pcap_tdata[3*8+:8] <= $fgetc(file);
+          pcap_tdata[4*8+:8] <= $fgetc(file);
+          pcap_tdata[5*8+:8] <= $fgetc(file);
+          pcap_tdata[6*8+:8] <= $fgetc(file);
+          pcap_tdata[7*8+:8] <= $fgetc(file);
+          pcap_tdata[8*8+:8] <= $fgetc(file);
+          pcap_tdata[9*8+:8] <= $fgetc(file);
+          pcap_tdata[10*8+:8] <= $fgetc(file);
+          pcap_tdata[11*8+:8] <= $fgetc(file);
+          pcap_tdata[12*8+:8] <= $fgetc(file);
+          pcap_tdata[13*8+:8] <= $fgetc(file);
+          pcap_tdata[14*8+:8] <= $fgetc(file);
+          pcap_tdata[15*8+:8] <= $fgetc(file);
+        end
+        #9
         pcap_tvalid = 1;
 //        @(posedge pcap_tready)
     end   

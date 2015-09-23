@@ -81,6 +81,7 @@ endmodule
 module pcap_lheader_parser ( 
   input   wire                     CLK,
   input   wire                     RST_N,
+  input   wire                     NEXT_EOF,
   input   wire                     EOF,
 
   input   `AXI4_STREAM_STRUCT(128b) AXIS_PCAP_S,
@@ -95,11 +96,29 @@ module pcap_lheader_parser (
   typedef enum logic[1:0] {INITIAL_HDR, PARTIAL_HDR, END} lheader_parser_state_t;
   lheader_parser_state_t lheader_parser_state;
 
-  logic is_lheader_valid;
+  logic is_lheader_valid, update_cnt,eop;
   logic [31:0] prev_packet_size;
+  logic [31:0] noctects;
   logic [3:0]  offset_bus;
   
   assign is_lheader_valid = lheader_parser_state == END;
+
+  always_ff @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      noctects   <= 32'h8;
+      update_cnt<= 1'b1;
+    end else begin
+      if(!LOCAL_HEADER_VALID) begin
+        update_cnt <= 1'b1;
+        noctects   <= 16-offset_bus;
+      end else if(AXIS_PCAP_S.tvalid & AXIS_READY_PCAP_S.tready & update_cnt) begin
+        update_cnt <= 1'b1;
+        noctects <= noctects + 16;
+      end 
+    end
+  end
+
+  assign eop = LOCAL_HEADER_VALID & AXIS_PCAP_S.tvalid & AXIS_READY_PCAP_S.tready & (noctects >= (prev_packet_size + `sizeof(pcaprec_hdr_t) -32));
 
   // We store the previous packet size so the offset can be computed.
   always_ff @(negedge RST_N or posedge CLK) begin
@@ -109,7 +128,7 @@ module pcap_lheader_parser (
       if(LOCAL_HEADER_VALID) begin
         prev_packet_size <= LOCAL_HEADER.incl_len;
       end else begin
-        prev_packet_size <= prev_packet_size;
+        prev_packet_size <= 32'hffffffff;//prev_packet_size;
       end
     end
   end
@@ -118,7 +137,7 @@ module pcap_lheader_parser (
     if(!RST_N) begin
       offset_bus     <= 4'h8;
     end else begin
-      if(EOF) begin
+      if(eop) begin
         offset_bus <= offset_bus+prev_packet_size;
       end else begin
         offset_bus <= offset_bus;
@@ -131,9 +150,104 @@ module pcap_lheader_parser (
       lheader_parser_state <= INITIAL_HDR;
       LOCAL_HEADER         <= '{default:0};
     end else begin
-      if(EOF) begin
-        lheader_parser_state <= INITIAL_HDR;
-        LOCAL_HEADER         <= '{default:0};
+      if(eop) begin
+        if(AXIS_PCAP_S.tvalid) begin
+          case(offset_bus+prev_packet_size[3:0]) 
+            4'h0: begin
+              lheader_parser_state  <= END;
+              LOCAL_HEADER.ts_sec   <= AXIS_PCAP_S.tdata[31:0]; 
+              LOCAL_HEADER.ts_usec  <= AXIS_PCAP_S.tdata[63:32]; 
+              LOCAL_HEADER.incl_len <= AXIS_PCAP_S.tdata[95:64]; 
+              LOCAL_HEADER.orig_len <= AXIS_PCAP_S.tdata[127:96];
+            end 
+            4'h1: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[39:8]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[71:40]; 
+              LOCAL_HEADER.incl_len      <= AXIS_PCAP_S.tdata[103:72]; 
+              LOCAL_HEADER.orig_len[23:0]<= AXIS_PCAP_S.tdata[127:104];
+            end
+            4'h2: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[47:16]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[79:48]; 
+              LOCAL_HEADER.incl_len      <= AXIS_PCAP_S.tdata[111:80]; 
+              LOCAL_HEADER.orig_len[15:0]<= AXIS_PCAP_S.tdata[127:112]; 
+            end
+            4'h3: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[55:24]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[87:56]; 
+              LOCAL_HEADER.incl_len      <= AXIS_PCAP_S.tdata[119:88]; 
+              LOCAL_HEADER.orig_len[7:0] <= AXIS_PCAP_S.tdata[127:120]; 
+            end
+            4'h4: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[63:32]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[95:64];
+              LOCAL_HEADER.incl_len      <= AXIS_PCAP_S.tdata[127:96]; 
+            end
+            4'h5: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[71:40]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[103:72];
+              LOCAL_HEADER.incl_len[23:0]<= AXIS_PCAP_S.tdata[127:104]; 
+            end
+            4'h6: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[79:48]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[111:80];
+              LOCAL_HEADER.incl_len[15:0]<= AXIS_PCAP_S.tdata[127:112];  
+            end
+            4'h7: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[87:56]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[119:88];
+              LOCAL_HEADER.incl_len[7:0] <= AXIS_PCAP_S.tdata[127:120];  
+            end
+            4'h8: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[95:64]; 
+              LOCAL_HEADER.ts_usec       <= AXIS_PCAP_S.tdata[127:96]; 
+            end
+            4'h9: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[103:72]; 
+              LOCAL_HEADER.ts_usec[23:0] <= AXIS_PCAP_S.tdata[127:104]; 
+            end
+            4'ha: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[111:80]; 
+              LOCAL_HEADER.ts_usec[15:0] <= AXIS_PCAP_S.tdata[127:112]; 
+            end
+            4'hb: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[119:88]; 
+              LOCAL_HEADER.ts_usec[7:0] <= AXIS_PCAP_S.tdata[127:120]; 
+            end
+            4'hc: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec        <= AXIS_PCAP_S.tdata[127:96]; 
+            end
+            4'hd: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec[23:0]  <= AXIS_PCAP_S.tdata[127:104]; 
+            end
+            4'he: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec[15:0]  <= AXIS_PCAP_S.tdata[127:112]; 
+            end
+            4'hf: begin
+              lheader_parser_state       <= PARTIAL_HDR;
+              LOCAL_HEADER.ts_sec[7:0]   <= AXIS_PCAP_S.tdata[127:120]; 
+            end
+            default: begin
+            end
+          endcase
+        end else begin
+          LOCAL_HEADER           <= '{default:0};
+          lheader_parser_state   <= INITIAL_HDR;
+        end
       end else begin
         case(lheader_parser_state)
           INITIAL_HDR: begin
@@ -533,7 +647,8 @@ module packet_parser (
   input   `AXI4_STREAM_READY_STRUCT(128b) AXIS_READY_RAW_CRC_M,
 
   input   genericrec_hdr_t          GENERIC_HEADER,
-  output  wire                      EOF
+  output  wire                      NEXT_EOF,
+  output  reg                       EOF
 );
 
 
@@ -541,47 +656,182 @@ module packet_parser (
   logic [31:0] n_fcs;
   logic [31:0] noctects;
   logic [3:0]  offset_bus;
-  logic [3:0]  loffset_bus;
+  logic [3:0]  offset_bus_plus_len;
   logic [127:0]  axis_raw_s_tdata_pipe;
   logic [127:0]  axis_raw_s_tvalid_pipe;
   logic [15:0]  axis_raw_s_tlast_tstrb;
+  logic [31:0] prev_packet_size;
 
   `AXI4_STREAM_STRUCT(128b) axis_fifo;
   `AXI4_STREAM_STRUCT(128b) axis_fcs;
   `AXI4_STREAM_READY_STRUCT(128b) axis_ready_fifo;
-  logic update_fcs;
+  logic update_cnt;
+
+
+
+  typedef enum logic[2:0] {INI, DATA, WAIT_CRC, END, CRC, IDLE} dump_state_t;
+  dump_state_t dump_state,dump_state_pipe;
+
+
   always_ff @(negedge RST_N or posedge CLK) begin
     if(!RST_N) begin
       noctects   <= 32'h0;
-      update_fcs<= 1'b0;
+      update_cnt<= 1'b1;
     end else begin
-      if( !EOF ) begin
+      if(NEXT_EOF) begin
+        update_cnt <= 1'b0;
+      end else if(dump_state == CRC) begin
         if(AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready) begin
-          update_fcs <= 1'b1;
-          noctects <= noctects + AXIS_RAW_S.tstrb [0] + AXIS_RAW_S.tstrb [1] + AXIS_RAW_S.tstrb [2]
+          noctects <= AXIS_RAW_S.tstrb [0] + AXIS_RAW_S.tstrb [1] + AXIS_RAW_S.tstrb [2]
                       + AXIS_RAW_S.tstrb [3] + AXIS_RAW_S.tstrb [4] + AXIS_RAW_S.tstrb [5]
                       + AXIS_RAW_S.tstrb [6] + AXIS_RAW_S.tstrb [7] + AXIS_RAW_S.tstrb [8]
                       + AXIS_RAW_S.tstrb [9] + AXIS_RAW_S.tstrb [10] + AXIS_RAW_S.tstrb [11]
                       + AXIS_RAW_S.tstrb [12] + AXIS_RAW_S.tstrb [13] + AXIS_RAW_S.tstrb [14]
                       + AXIS_RAW_S.tstrb [15];
         end else begin
-          update_fcs <= 1'b0;
+          noctects <= 32'h0;
         end
-      end else begin
-        noctects   <= 32'h0;
-        update_fcs   <= 1'b1;
-      end
+        update_cnt <= 1'b1;
+      end else if(AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready & update_cnt) begin
+        update_cnt <= 1'b1;
+        noctects <= noctects + AXIS_RAW_S.tstrb [0] + AXIS_RAW_S.tstrb [1] + AXIS_RAW_S.tstrb [2]
+                    + AXIS_RAW_S.tstrb [3] + AXIS_RAW_S.tstrb [4] + AXIS_RAW_S.tstrb [5]
+                    + AXIS_RAW_S.tstrb [6] + AXIS_RAW_S.tstrb [7] + AXIS_RAW_S.tstrb [8]
+                    + AXIS_RAW_S.tstrb [9] + AXIS_RAW_S.tstrb [10] + AXIS_RAW_S.tstrb [11]
+                    + AXIS_RAW_S.tstrb [12] + AXIS_RAW_S.tstrb [13] + AXIS_RAW_S.tstrb [14]
+                    + AXIS_RAW_S.tstrb [15];
+      end 
+
     end
   end
 
 
+
+  always_ff @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      dump_state <= IDLE;
+    end else begin
+      if(!NEXT_EOF) begin // Process more data
+        if(AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready) begin
+          if(dump_state==IDLE) begin
+            dump_state <= DATA; //INI;
+          end else begin
+            dump_state <= DATA;
+          end
+        end else begin
+          if(dump_state==WAIT_CRC) begin
+            dump_state <= END;
+          end else if(dump_state==END) begin
+            dump_state <= CRC;
+          end else if(dump_state==CRC) begin
+            dump_state <= IDLE;
+          end else begin
+            dump_state <= dump_state;
+          end
+        end
+      end else begin 
+        dump_state <= WAIT_CRC;
+      end
+    end
+  end
+
+  always_ff @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      offset_bus <= 4'h8;
+    end else begin
+      if(dump_state == DATA && EOF) begin
+        offset_bus <= offset_bus_plus_len;
+      end else if(dump_state == CRC || (offset_bus!=0 && dump_state == END)) begin
+        offset_bus <= offset_bus_plus_len + `sizeof(pcaprec_hdr_t);
+      end else begin
+        offset_bus <= offset_bus;
+      end
+    end
+  end
+
+  // Register the offset plus the length just in case that the Header is modified within the next cycle
+  always_ff @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      offset_bus_plus_len <= 4'h0;
+      dump_state_pipe     <= IDLE;
+      prev_packet_size     <= 32'hffffffff;
+    end else begin
+      dump_state_pipe <= dump_state;
+      if(dump_state == DATA && dump_state_pipe != dump_state) begin // Just the first time we update the value.
+        offset_bus_plus_len <= offset_bus + (GENERIC_HEADER.orig_len);
+        prev_packet_size    <=  GENERIC_HEADER.orig_len;
+      end else if(dump_state == CRC) begin
+        prev_packet_size  <= 32'hffffffff;
+      end
+    end
+  end
+
+  assign AXIS_READY_RAW_S.tready  = dump_state != CRC && dump_state != END && dump_state != WAIT_CRC; 
+  assign NEXT_EOF = AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready & (noctects+16 >= prev_packet_size);
+
+  always_ff @(negedge RST_N or posedge CLK) begin
+    if(!RST_N) begin
+      EOF<= 1'b0;
+    end else begin
+      if(AXIS_RAW_S.tvalid) begin
+        EOF <= NEXT_EOF;
+      end 
+    end
+  end
+
+  assign axis_raw_s_tlast_tstrb = (offset_bus_plus_len) == 4'h0 ? 16'hFFFF :
+                                (offset_bus_plus_len) == 4'h1 ? 16'hFFFF :
+                                (offset_bus_plus_len) == 4'h2 ? 16'hFFFF :
+                                (offset_bus_plus_len) == 4'h3 ? 16'hFFFF :
+                                (offset_bus_plus_len) == 4'h4 ? 16'hFFFF :
+                                (offset_bus_plus_len) == 4'h5 ? 16'h7FFF :
+                                (offset_bus_plus_len) == 4'h6 ? 16'h3FFF :
+                                (offset_bus_plus_len) == 4'h7 ? 16'h1FFF :
+                                (offset_bus_plus_len) == 4'h8 ? 16'h0FFF :
+                                (offset_bus_plus_len) == 4'h9 ? 16'h07FF :
+                                (offset_bus_plus_len) == 4'ha ? 16'h03FF :
+                                (offset_bus_plus_len) == 4'hb ? 16'h01FF :
+                                (offset_bus_plus_len) == 4'hc ? 16'h00FF :
+                                (offset_bus_plus_len) == 4'hd ? 16'h007F :
+                                (offset_bus_plus_len) == 4'he ? 16'h003F :
+                                (offset_bus_plus_len) == 4'hf ? 16'h001F :
+                                16'h0;
+
+
+  assign axis_fcs.tdata = axis_fifo.tdata;
+  assign axis_fcs.tstrb = dump_state == WAIT_CRC ? axis_raw_s_tlast_tstrb : axis_fifo.tstrb;
+  assign axis_fcs.tlast = (axis_fifo.tvalid && dump_state == END) ||  (dump_state == WAIT_CRC);
+  assign axis_fcs.tvalid = (axis_fifo.tvalid && dump_state != CRC) ||  (dump_state == WAIT_CRC); // Obtain CRC from the module. Disable valid signal
+  // Compute fcs in any strb situation.
+  compute_fcs compute_fcs_i (
+    .CLK(CLK),
+    .RST_N(RST_N),
+    .AXIS_RAW_S(axis_fcs),
+    .AXIS_READY_RAW_S(), // Ignore, always accepting data
+    .FCS(n_fcs)
+  );
+
+  fcs_fifo fcs_fifo_i (
+    .s_aclk(CLK),                // input wire s_aclk
+    .s_aresetn(RST_N),          // input wire s_aresetn
+    .s_axis_tvalid(axis_fifo.tvalid),  // input wire s_axis_tvalid
+    .s_axis_tready(axis_ready_fifo.tready),  // output wire s_axis_tready
+    .s_axis_tdata(axis_fifo.tdata),    // input wire [127 : 0] s_axis_tdata
+    .s_axis_tlast(axis_fifo.tlast),    // input wire s_axis_tlast
+    .m_axis_tvalid(AXIS_RAW_CRC_M.tvalid),  // output wire m_axis_tvalid
+    .m_axis_tready(AXIS_READY_RAW_CRC_M.tready),  // input wire m_axis_tready
+    .m_axis_tdata(AXIS_RAW_CRC_M.tdata),    // output wire [127 : 0] m_axis_tdata
+    .m_axis_tlast(AXIS_RAW_CRC_M.tlast)    // output wire m_axis_tlast
+  );
+
+  // Align the data to the 128 bits interface. Use an auxiliar register 
   always_ff @(negedge RST_N or posedge CLK) begin
     if(!RST_N) begin
       axis_raw_s_tvalid_pipe <= 1'b0;
       axis_raw_s_tdata_pipe  <= 128'h0;
     end else begin
       if(AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready) begin
-        if( !(GENERIC_HEADER.valid & AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready & (noctects+16 >= GENERIC_HEADER.orig_len)) ) begin
+       // if( !NEXT_EOF ) begin
           case(offset_bus) 
             4'h0: begin
               axis_raw_s_tvalid_pipe      <= 1'b1;
@@ -651,61 +901,19 @@ module packet_parser (
               axis_raw_s_tvalid_pipe       <= 1'b0;
             end
           endcase
-        end else begin
+     /*   end else begin
           axis_raw_s_tdata_pipe       <= AXIS_RAW_S.tdata;
-        end
+        end*/
       end 
     end
   end
 
 
 
-  // Cuantos son validos de la ultima tanda? Tener en cuenta el tamaño del paquete.
-
-  typedef enum logic[2:0] {INI, DATA, END, CRC, IDLE} dump_state_t;
-  dump_state_t dump_state;
-
-  always_ff @(negedge RST_N or posedge CLK) begin
-    if(!RST_N) begin
-      dump_state <= IDLE;
-    end else begin
-      if( !(GENERIC_HEADER.valid & AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready & (noctects+16 >= GENERIC_HEADER.orig_len)) ) begin
-        if(AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready) begin
-          if(dump_state==IDLE) begin
-            dump_state <= DATA; //INI;
-          end else begin
-            dump_state <= DATA;
-          end
-        end else begin
-          if(dump_state==END) begin
-            dump_state <= CRC;
-          end else if(dump_state==CRC) begin
-            dump_state <= IDLE;
-          end else begin
-            dump_state <= dump_state;
-          end
-        end
-      end else begin 
-        dump_state <= END;
-      end
-    end
-  end
-
-  always_ff @(negedge RST_N or posedge CLK) begin
-    if(!RST_N) begin
-      offset_bus <= 4'h8;
-    end else begin
-      if(dump_state == DATA && EOF) begin
-        offset_bus <= offset_bus + GENERIC_HEADER.orig_len;
-      end else if(dump_state == CRC || (offset_bus!=0 && dump_state == END)) begin
-        offset_bus <= offset_bus + GENERIC_HEADER.orig_len + `sizeof(pcaprec_hdr_t);
-      end else begin
-        offset_bus <= offset_bus;
-      end
-    end
-  end
-
-
+  wire cycles_2;
+  wire [127:0] data_src;
+  assign cycles_2 = offset_bus_plus_len>offset_bus || AXIS_RAW_S.tstrb == 16'hffff;
+  assign data_src = axis_fifo.tdata; //cycles_2 ? axis_raw_s_tdata_pipe : axis_fifo.tdata;
   always_ff @(negedge RST_N or posedge CLK) begin
     if(!RST_N) begin
       axis_fifo.tvalid <= 1'b0;
@@ -717,97 +925,97 @@ module packet_parser (
         DATA: begin // Receive second and successive pieces of information. The pipe is full.
           case(offset_bus)
             4'h0: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= axis_raw_s_tdata_pipe;
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h1: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[7:0], axis_raw_s_tdata_pipe[119:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h2: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[15:0], axis_raw_s_tdata_pipe[111:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h3: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[23:0], axis_raw_s_tdata_pipe[103:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h4: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[31:0], axis_raw_s_tdata_pipe[95:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h5: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[39:0], axis_raw_s_tdata_pipe[87:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h6: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[47:0], axis_raw_s_tdata_pipe[79:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h7: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[55:0], axis_raw_s_tdata_pipe[71:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h8: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[63:0], axis_raw_s_tdata_pipe[63:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'h9: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[71:0], axis_raw_s_tdata_pipe[55:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'ha: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[79:0], axis_raw_s_tdata_pipe[47:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'hb: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[87:0], axis_raw_s_tdata_pipe[39:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'hc: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[95:0], axis_raw_s_tdata_pipe[31:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'hd: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[103:0], axis_raw_s_tdata_pipe[23:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'he: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[111:0], axis_raw_s_tdata_pipe[15:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
             end
             4'hf: begin
-              axis_fifo.tvalid <= 1'b1;
+              axis_fifo.tvalid <= !NEXT_EOF;
               axis_fifo.tdata  <= {AXIS_RAW_S.tdata[119:0], axis_raw_s_tdata_pipe[7:0]};
               axis_fifo.tstrb  <= 16'hFFFF;
               axis_fifo.tlast  <= 1'b0;
@@ -820,135 +1028,148 @@ module packet_parser (
             end
           endcase  
         end
+        WAIT_CRC: begin
+          if(cycles_2) begin
+            axis_fifo.tvalid <= 1'b1;
+            axis_fifo.tlast  <= 1'b0;
+            axis_fifo.tdata  <= axis_fifo.tdata;
+            axis_fifo.tstrb  <= 16'hffff;
+          end else begin
+            axis_fifo.tvalid <= 1'b0;
+            axis_fifo.tlast  <= 1'b0;
+            axis_fifo.tdata  <= axis_fifo.tdata;
+            axis_fifo.tstrb  <= 16'b0;
+          end
+        end
         END: begin // An EOF has been received. The pipe is full, it has to be emptied.
-          case(offset_bus + (GENERIC_HEADER.orig_len))
-            4'h0: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= axis_fifo.tdata;
-              axis_fifo.tstrb  <= 16'hFFFF;
-              axis_fifo.tlast  <= 1'b0;
-            end
-            4'h1: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {n_fcs[7:0],axis_fifo.tdata[119:0]};
-              axis_fifo.tstrb  <= 16'hFFFF;
-              axis_fifo.tlast  <= 1'b0;
-            end
-            4'h2: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {n_fcs[15:0],axis_fifo.tdata[111:0]};
-              axis_fifo.tstrb  <= 16'hFFFF;
-              axis_fifo.tlast  <= 1'b0;
-            end
-            4'h3: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {n_fcs[23:0],axis_fifo.tdata[103:0]};
-              axis_fifo.tstrb  <= 16'hFFFF;
-              axis_fifo.tlast  <= 1'b0;
-            end
-            4'h4: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {n_fcs,axis_fifo.tdata[95:0]};
-              axis_fifo.tstrb  <= 16'hFFFF;
-              axis_fifo.tlast  <= 1'b0;
-            end
-            4'h5: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{8{1'b0}},n_fcs,axis_fifo.tdata[85:0]};
-              axis_fifo.tstrb  <= 16'h7FFF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'h6: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{16{1'b0}},n_fcs,axis_fifo.tdata[79:0]};
-              axis_fifo.tstrb  <= 16'h3FFF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'h7: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{24{1'b0}},n_fcs,axis_fifo.tdata[71:0]};
-              axis_fifo.tstrb  <= 16'h1FFF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'h8: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{32{1'b0}},n_fcs,axis_fifo.tdata[63:0]};
-              axis_fifo.tstrb  <= 16'h0FFF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'h9: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{40{1'b0}},n_fcs,axis_fifo.tdata[55:0]};
-              axis_fifo.tstrb  <= 16'h07FF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'ha: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{48{1'b0}},n_fcs,axis_fifo.tdata[47:0]};
-              axis_fifo.tstrb  <= 16'h03FF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'hb: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{56{1'b0}},n_fcs,axis_fifo.tdata[39:0]};
-              axis_fifo.tstrb  <= 16'h01FF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'hc: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{64{1'b0}},n_fcs,axis_fifo.tdata[31:0]};
-              axis_fifo.tstrb  <= 16'h00FF;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'hd: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{72{1'b0}},n_fcs,axis_fifo.tdata[23:0]};
-              axis_fifo.tstrb  <= 16'h007F;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'he: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{80{1'b0}},n_fcs,axis_fifo.tdata[15:0]};
-              axis_fifo.tstrb  <= 16'h003F;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            4'hf: begin
-              axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{88{1'b0}},n_fcs,axis_fifo.tdata[7:0]};
-              axis_fifo.tstrb  <= 16'h001F;
-              axis_fifo.tlast  <= 1'b1;
-            end
-            default: begin
-              axis_fifo.tvalid <= 1'b0;
-              axis_fifo.tdata  <= 128'b0;
-              axis_fifo.tstrb  <= 16'b0;
-              axis_fifo.tlast  <= 1'b0;
-            end
-          endcase 
+            case(prev_packet_size[3:0])
+              4'hf: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= data_src;
+                axis_fifo.tstrb  <= 16'hFFFF;
+                axis_fifo.tlast  <= 1'b0;
+              end
+              4'he: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {n_fcs[7:0],data_src[119:0]};
+                axis_fifo.tstrb  <= 16'hFFFF;
+                axis_fifo.tlast  <= 1'b0;
+              end
+              4'hd: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {n_fcs[15:0],data_src[111:0]};
+                axis_fifo.tstrb  <= 16'hFFFF;
+                axis_fifo.tlast  <= 1'b0;
+              end
+              4'hc: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {n_fcs[23:0],data_src[103:0]};
+                axis_fifo.tstrb  <= 16'hFFFF;
+                axis_fifo.tlast  <= 1'b0;
+              end
+              4'hb: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {n_fcs,data_src[95:0]};
+                axis_fifo.tstrb  <= 16'hFFFF;
+                axis_fifo.tlast  <= 1'b0;
+              end
+              4'ha: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{8{1'b0}},n_fcs,data_src[85:0]};
+                axis_fifo.tstrb  <= 16'h7FFF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h9: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{16{1'b0}},n_fcs,data_src[79:0]};
+                axis_fifo.tstrb  <= 16'h3FFF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h8: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{24{1'b0}},n_fcs,data_src[71:0]};
+                axis_fifo.tstrb  <= 16'h1FFF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h7: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{32{1'b0}},n_fcs,data_src[63:0]};
+                axis_fifo.tstrb  <= 16'h0FFF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h6: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{40{1'b0}},n_fcs,data_src[55:0]};
+                axis_fifo.tstrb  <= 16'h07FF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h5: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{48{1'b0}},n_fcs,data_src[47:0]};
+                axis_fifo.tstrb  <= 16'h03FF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h4: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{56{1'b0}},n_fcs,data_src[39:0]};
+                axis_fifo.tstrb  <= 16'h01FF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h3: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{64{1'b0}},n_fcs,data_src[31:0]};
+                axis_fifo.tstrb  <= 16'h00FF;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h2: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{72{1'b0}},n_fcs,data_src[23:0]};
+                axis_fifo.tstrb  <= 16'h007F;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h1: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{80{1'b0}},n_fcs,data_src[15:0]};
+                axis_fifo.tstrb  <= 16'h003F;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              4'h0: begin
+                axis_fifo.tvalid <= 1'b1;
+                axis_fifo.tdata  <= {{88{1'b0}},n_fcs,data_src[7:0]};
+                axis_fifo.tstrb  <= 16'h001F;
+                axis_fifo.tlast  <= 1'b1;
+              end
+              default: begin
+                axis_fifo.tvalid <= 1'b0;
+                axis_fifo.tdata  <= 128'b0;
+                axis_fifo.tstrb  <= 16'b0;
+                axis_fifo.tlast  <= 1'b0;
+              end
+            endcase 
         end
         CRC: begin
-          case(offset_bus)
-            4'h0: begin
+          case(prev_packet_size[3:0])
+            4'hf: begin
               axis_fifo.tvalid <= 1'b1;
               axis_fifo.tdata  <= {{96{1'b0}},n_fcs};
               axis_fifo.tstrb  <= 16'h000F;
               axis_fifo.tlast  <= 1'b1;
             end
-            4'h1: begin
+            4'he: begin
               axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{104{1'b0}},n_fcs[23:0]};
+              axis_fifo.tdata  <= {{104{1'b0}},n_fcs[31:8]};
               axis_fifo.tstrb  <= 16'h0003;
               axis_fifo.tlast  <= 1'b1;
             end
-            4'h2: begin
+            4'hd: begin
               axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{112{1'b0}},n_fcs[15:0]};
+              axis_fifo.tdata  <= {{112{1'b0}},n_fcs[31:16]};
               axis_fifo.tstrb  <= 16'h0001;
               axis_fifo.tlast  <= 1'b1;
             end
-            4'h3: begin
+            4'hc: begin
               axis_fifo.tvalid <= 1'b1;
-              axis_fifo.tdata  <= {{120{1'b0}},n_fcs[7:0]};
+              axis_fifo.tdata  <= {{120{1'b0}},n_fcs[31:24]};
               axis_fifo.tstrb  <= 16'h0000;
               axis_fifo.tlast  <= 1'b1;
             end
@@ -969,56 +1190,6 @@ module packet_parser (
       endcase 
     end
   end
-
-
-
-  assign AXIS_READY_RAW_S.tready  = dump_state != CRC && dump_state != END; 
-  assign EOF = GENERIC_HEADER.valid & AXIS_RAW_S.tvalid & AXIS_READY_RAW_S.tready & (noctects+16 >= GENERIC_HEADER.orig_len);
-
-  assign axis_raw_s_tlast_tstrb = (offset_bus+GENERIC_HEADER.orig_len) == 4'h0 ? 16'hFFFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h1 ? 16'hFFFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h2 ? 16'hFFFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h3 ? 16'hFFFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h4 ? 16'hFFFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h5 ? 16'h7FFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h6 ? 16'h3FFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h7 ? 16'h1FFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h8 ? 16'h0FFF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'h9 ? 16'h07FF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'ha ? 16'h03FF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'hb ? 16'h01FF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'hc ? 16'h00FF :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'hd ? 16'h007F :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'he ? 16'h003F :
-                                (offset_bus+GENERIC_HEADER.orig_len) == 4'hf ? 16'h001F :
-                                16'h0;
-
-
-  assign axis_fcs.tdata = axis_fifo.tdata;
-  assign axis_fcs.tstrb = dump_state == END ? axis_raw_s_tlast_tstrb : axis_fifo.tstrb;
-  assign axis_fcs.tlast = axis_fifo.tvalid && dump_state == END;
-  assign axis_fcs.tvalid = axis_fifo.tvalid && dump_state != CRC; // Obtain CRC from the module. Disable valid signal
-  // Compute fcs in any strb situation.
-  compute_fcs compute_fcs_i (
-    .CLK(CLK),
-    .RST_N(RST_N),
-    .AXIS_RAW_S(axis_fcs),
-    .AXIS_READY_RAW_S(), // Ignore, always accepting data
-    .FCS(n_fcs)
-  );
-
-  fcs_fifo fcs_fifo_i (
-    .s_aclk(CLK),                // input wire s_aclk
-    .s_aresetn(RST_N),          // input wire s_aresetn
-    .s_axis_tvalid(axis_fifo.tvalid),  // input wire s_axis_tvalid
-    .s_axis_tready(axis_ready_fifo.tready),  // output wire s_axis_tready
-    .s_axis_tdata(axis_fifo.tdata),    // input wire [127 : 0] s_axis_tdata
-    .s_axis_tlast(axis_fifo.tlast),    // input wire s_axis_tlast
-    .m_axis_tvalid(AXIS_RAW_CRC_M.tvalid),  // output wire m_axis_tvalid
-    .m_axis_tready(AXIS_READY_RAW_CRC_M.tready),  // input wire m_axis_tready
-    .m_axis_tdata(AXIS_RAW_CRC_M.tdata),    // output wire [127 : 0] m_axis_tdata
-    .m_axis_tlast(AXIS_RAW_CRC_M.tlast)    // output wire m_axis_tlast
-  );
 
 endmodule
 
@@ -1054,7 +1225,7 @@ module pcap2hwgen (
   wire          local_header_valid;
 
   genericrec_hdr_t gen_local_header;
-  wire          eof;
+  wire          eof, next_eof;
 
 
 
@@ -1086,6 +1257,7 @@ module pcap2hwgen (
   pcap_lheader_parser pcap_lheader_parser_i (
     .CLK(CLK),
     .RST_N(RST_N),
+    .NEXT_EOF(next_eof),
     .EOF(eof),
     .AXIS_PCAP_S(axis_pcap_lvl2),
     .AXIS_READY_PCAP_S(axis_ready_pcap_lvl2),
@@ -1114,7 +1286,8 @@ module pcap2hwgen (
     .AXIS_RAW_CRC_M(axis_raw_crc),
     .AXIS_READY_RAW_CRC_M(axis_ready_raw_crc),
     .GENERIC_HEADER(gen_local_header),
-    .EOF(eof)
+    .NEXT_EOF(next_eof), // The next valid transfer will complete the current packet
+    .EOF(eof)            // This transfer completes the current packet
   );
 
   hwgen_header_creator hwgen_header_creator_i (

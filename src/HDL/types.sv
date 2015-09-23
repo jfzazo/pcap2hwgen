@@ -71,6 +71,6 @@ typedef struct{
         logic tready; \
     } `AXI4_STREAM_READY_STRUCT(NAME);
 
-`define sizeof(OBJECT) $bits(OBJECT)
+`define sizeof(OBJECT) ($bits(OBJECT)/8)
 
 endpackage
