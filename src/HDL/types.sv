@@ -5,8 +5,8 @@ parameter  PCAP_US_RESOLUTION_C = 32'hA1B2C3D4;
 parameter  PCAP_NS_RESOLUTION_C = 32'hA1B23C4D;
 parameter  HWGEN_MAGIC_NUMBER_C = 16'h6969;
 parameter  CLOCK_FREQ_HZ        = 156250000;
-parameter  NS_PER_CYCLE         = (1.0/CLOCK_FREQ_HZ*1e9);
-parameter  NS_PER_CYCLE_INV     = (1.0/(1.0/CLOCK_FREQ_HZ*1e9));
+parameter  NS_PER_CYCLE         = (1.0/CLOCK_FREQ_HZ*1000000000);
+parameter  NS_PER_CYCLE_INV_x1e5=  CLOCK_FREQ_HZ/10000; // (1.0/(1.0/CLOCK_FREQ_HZ*1000000000)) = 0.15625;
 
 
 
@@ -71,5 +71,6 @@ typedef struct{
         logic tready; \
     } `AXI4_STREAM_READY_STRUCT(NAME);
 
+`define sizeof(OBJECT) $bits(OBJECT)
 
 endpackage
